@@ -1,0 +1,124 @@
+#+title: org-dock
+#+options: toc:2 num:nil
+
+Take a heading out to work on it, with you or an agent, then float it back.
+
+* Why
+
+A ship that needs work is taken out of the water into a dry dock.  It is
+worked on there, where nothing else is in the way, and floated back when
+it is done.
+
+A heading can be treated the same.  ~org-dock~ takes the heading at point,
+with everything under it, out into a copy of its own, and ~C-c C-c~ in the
+copy writes it back.  While the heading is out it cannot be changed in its
+file: whatever happens to it happens in the copy, and nothing outside the
+heading changes at all.
+
+That bound is what lets an agent be asked without a second thought.  The
+agent is given the copy to write and nothing else; the file the heading
+lives in, and the files its links point to, are given to be read.  What it
+writes is a change to the copy, to be looked over like any other, and what
+reaches the file is what the copy holds when it is written back.
+
+So there is one place to write a heading, the same for you and for an
+agent, and the same whatever brought you there: a heading in your notes, a
+line on a board drawn from a file, a document read beside its notes.
+
+* Install
+
+#+begin_src emacs-lisp
+(use-package org-dock
+  :straight (org-dock :host github :repo "yoshzucker/org-dock")
+  :commands (org-dock))
+#+end_src
+
+* Commands
+
+| Key       | Command              | Does                                                 |
+|-----------+----------------------+------------------------------------------------------|
+|           | ~org-dock~           | take the heading at point out into its copy          |
+| ~C-c C-c~ | ~org-dock-finish~    | in the copy: write it back over the heading and save |
+| ~C-c C-k~ | ~org-dock-abort~     | in the copy: let it go; the heading stays as it was  |
+| ~C-c C-;~ | ~org-dock-ask-agent~ | in the copy: make an agent ready to work on it       |
+
+* The copy
+
+A copy is a file of its own in ~org-dock-directory~, away from the files
+the headings come from.  That keeps it out of whatever gathers those files
+-- an index of notes, a search, version control -- which would otherwise
+meet a heading twice, ids and all.  It is named by the time and the
+heading, so that it can be told apart in a list of files.
+
+In the copy, links are read as they would be in the heading's own file:
+its ~default-directory~ is that file's directory, and attachments are
+found where the file keeps them.
+
+While the heading is out, its text cannot be changed in its file; text
+can still be written right before it and right after it.  Doing
+~org-dock~ again on the heading shows its copy.  A heading with a heading
+under it that is out is not taken out, since writing it back would write
+over the other.
+
+~C-c C-c~ finds the heading where it was taken out -- text written above
+it in the meantime does not matter -- or, if the file was changed on disk
+and read again, wherever its text is, unchanged, once.  When it is not
+found, nothing is written and the copy is kept.  What the copy holds goes
+where the heading was: a heading written there at the heading's level
+stands beside it in the file.  A heading above that level is not written
+back, since it would take in the headings that come after it in the file;
+~C-c C-c~ says so and puts point on it.  A copy written back as it
+was taken out changes nothing and saves nothing.  The window configuration
+from before is put back, as ~org-capture~ does.
+
+A copy left when Emacs stopped with it open is offered the next time its
+heading, unchanged, is taken out.
+
+* Asking an agent
+
+~C-c C-;~ saves the copy and calls ~org-dock-agent-function~ with a plist:
+
+| Key        | Holds                                                    |
+|------------+----------------------------------------------------------|
+| ~:copy~    | the copy, the one file the agent is to write             |
+| ~:origin~  | the file the heading was taken out of, to read only      |
+| ~:heading~ | the heading's title                                      |
+| ~:request~ | a file telling the agent all of this, to be read first   |
+| ~:links~   | the copy's links that point to files, as ~(LINK . FILE)~ |
+| ~:files~   | those files, each once                                   |
+| ~:line~    | the line point is on in the copy                         |
+| ~:region~  | ~(FIRST . LAST)~, the lines selected, or ~nil~           |
+
+The function only gets the agent ready: what to do is said where the agent
+is spoken to, after the request.  With an agent attached to Emacs that
+shows each change to a file before it is made, the change to the copy is
+looked over there, and the copy's buffer follows its file as it changes.
+
+The request file says which file to write and which to leave, where point
+is, and what each link points to.  ~org-dock-link-file-functions~ finds the
+file a link points to: ~file:~ and ~attachment:~ links are known, and a
+package with links of its own adds a function for them.  A link in a
+property counts.  ~org-dock-request-functions~ add to the request what a
+kind of file needs said: the rules it keeps to, how it cites.
+
+* For other packages
+
+~org-dock-heading~ takes a heading out with more said: where point goes in
+the copy (~:at~), what to do once it is written back (~:finish~, given the
+heading's new bounds) or let go (~:abort~), whether to show it
+(~:display~) and to put the windows back (~:restore~).
+~org-dock-origin-file~ says, in a copy, which file its heading came from.
+
+* Settings
+
+| Variable                  | Default                 |                                        |
+|---------------------------+-------------------------+----------------------------------------|
+| ~org-dock-directory~      | ~org-dock/~ in the user | where the copies are kept              |
+|                           | Emacs directory         |                                        |
+| ~org-dock-agent-function~ | ~nil~                   | what makes an agent ready, see above   |
+
+* Tests
+
+#+begin_src sh
+emacs --batch -Q -L . -L test -l test/org-dock-test.el -f ert-run-tests-batch-and-exit
+#+end_src

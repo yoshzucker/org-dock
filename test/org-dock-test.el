@@ -327,6 +327,55 @@ the same, with nothing saved."
           (should (string-match-p "under\nadded\n\\* After" (buffer-string))))
       (delete-directory org-dock-directory t))))
 
+(ert-deftest org-dock-test-the-whole-file ()
+  "Before the first heading, the whole file is taken out, named by its
+title; a heading at any level is written back, and the agent is told the
+copy is the whole of the file.  A directory a link points to is given as
+one."
+  (org-dock-test--with-file (concat org-dock-test--text "[[file:drafts/]]\n")
+    (make-directory (expand-file-name "drafts" dir))
+    (let* ((origin (current-buffer))
+           (whole (buffer-string))
+           got
+           (org-dock-agent-function (lambda (request) (setq got request))))
+      (goto-char (point-min))
+      (let ((copy (org-dock-test--dock)))
+        (with-current-buffer copy
+          (should (equal (buffer-string) whole))
+          (should (equal (org-dock--session-heading org-dock--session) "Notes"))
+          (org-dock-ask-agent)
+          (should (plist-get got :whole))
+          (should (equal (plist-get got :files) (list (expand-file-name "drafts/" dir))))
+          (let ((text (org-dock-test--file-text (plist-get got :request))))
+            (should (string-match-p "the whole of" text))
+            (should (string-match-p (regexp-quote (file-name-as-directory
+                                                   (expand-file-name "drafts" dir)))
+                                    text))))
+        (with-current-buffer origin
+          (goto-char (point-max))
+          (forward-line -1)
+          (should-error (insert "x") :type 'text-read-only)
+          (org-dock-test--goto "Topic")
+          (should (eq (org-dock-test--dock) copy)))
+        (with-current-buffer copy
+          (goto-char (point-max))
+          (insert "* New\n")
+          (org-dock-finish))
+        (should (equal (buffer-string) (concat whole "* New\n")))
+        (should (equal (org-dock-test--file-text file) (buffer-string)))))))
+
+(ert-deftest org-dock-test-the-whole-file-by-prefix ()
+  "With WHOLE, the whole file is taken out from inside a heading too; not
+while a heading of it is out."
+  (org-dock-test--with-file org-dock-test--text
+    (org-dock-test--goto "Child")
+    (with-current-buffer (org-dock-test--dock :whole t)
+      (should (equal (buffer-string) org-dock-test--text))
+      (org-dock-abort))
+    (org-dock-test--goto "Child")
+    (org-dock-test--dock)
+    (should-error (org-dock-test--dock :whole t) :type 'user-error)))
+
 (ert-deftest org-dock-test-copy-file-name ()
   "A copy is named by the time and its heading, with nothing in the name a
 shell or a prompt would take apart."

@@ -40,7 +40,8 @@
 ;; the agent writes comes back as the copy's file changing, and what
 ;; reaches the heading is what the copy holds when C-c C-c writes it back.
 ;;
-;; `org-dock'            take the heading at point out into its copy
+;; `org-dock'            take the heading at point out into its copy;
+;;                       before the first heading, or with C-u, the whole file
 ;; `org-dock-finish'     C-c C-c in the copy: write it back, and save
 ;; `org-dock-abort'      C-c C-k: let the copy go; the heading stays as it was
 ;; `org-dock-ask-agent'  C-c C-; : make an agent ready to work on the copy
@@ -76,7 +77,8 @@ Called by \\[org-dock-ask-agent] with a plist:
 
   :copy     the copy, the one file the agent is to write
   :origin   the file the heading was taken out of, to read and not write
-  :heading  the heading's title
+  :heading  the heading's title, or the file's when :whole
+  :whole    non-nil when the copy is the whole of the file
   :request  a file telling the agent all of this, to be read first
   :links    the copy's links that point to files, as (NAME . FILE)
   :files    those files, each once
@@ -118,6 +120,7 @@ files have rules of their own says them here.")
   original      ; their text when it was taken out
   copy          ; the copy's file
   heading       ; the heading's title
+  whole         ; non-nil when what is out is the whole file
   windows       ; the window configuration to put back, or nil
   finish        ; called once the copy is written back, or nil
   abort)        ; called once the copy is let go, or nil
@@ -190,14 +193,22 @@ So that a copy left when Emacs stopped can be gone on with."
       (file-name-nondirectory (org-dock--session-file session))
     (buffer-name (org-dock--session-origin session))))
 
-(defun org-dock--bounds (pos)
-  "Return (BEG . END) of the heading at POS with everything under it."
+(defun org-dock--bounds (pos &optional whole)
+  "Return (BEG . END) of the heading at POS with everything under it.
+With WHOLE, of the whole buffer."
   (org-with-wide-buffer
    (goto-char pos)
-   (when (org-before-first-heading-p)
-     (user-error "org-dock: not under a heading"))
-   (org-back-to-heading t)
-   (cons (point) (progn (org-end-of-subtree t t) (point)))))
+   (if whole
+       (cons (point-min) (point-max))
+     (org-back-to-heading t)
+     (cons (point) (progn (org-end-of-subtree t t) (point))))))
+
+(defun org-dock--title ()
+  "Return what names the whole of this buffer: its title, or its file's name."
+  (or (org-get-title)
+      (if buffer-file-name
+          (file-name-base buffer-file-name)
+        (buffer-name))))
 
 ;;;; Keeping the heading as it was
 
@@ -379,20 +390,25 @@ As a plist from its meta file, with :copy."
   (pop-to-buffer buffer '((display-buffer-reuse-window display-buffer-pop-up-window))))
 
 ;;;###autoload
-(defun org-dock (&optional pos)
+(defun org-dock (&optional pos whole)
   "Take the heading at point out into a copy, with everything under it.
 Show the copy, to be worked on.  In it,
 \\<org-dock-mode-map>\\[org-dock-finish] writes it back and saves the file,
 and \\[org-dock-abort] lets it go.  While it is out the heading cannot be
 changed in its file.  On a heading that is out, show its copy.  A copy of
 the heading left from before -- Emacs stopped with it open -- is offered
-to go on with.  POS, a position in the current buffer, is used for point."
-  (interactive)
-  (org-dock-heading (or pos (point))))
+to go on with.  POS, a position in the current buffer, is used for point.
 
-(cl-defun org-dock-heading (pos &key at finish abort (display t) (restore t))
+Before the first heading, or with WHOLE, interactively the prefix
+argument, the whole file is taken out: for a draft of all of it, say,
+written by an agent at one go."
+  (interactive (list nil current-prefix-arg))
+  (org-dock-heading (or pos (point)) :whole whole))
+
+(cl-defun org-dock-heading (pos &key whole at finish abort (display t) (restore t))
   "Take the heading at POS in the current buffer out into its copy.
-Return the copy's buffer, shown unless DISPLAY is nil.
+Return the copy's buffer, shown unless DISPLAY is nil.  With WHOLE, or
+before the first heading, the whole buffer is taken out.
 
 AT, a position in the heading, is where point goes in the copy; else it
 is at the heading.  FINISH is called in the heading's buffer with the
@@ -410,26 +426,37 @@ window configuration from before is put back."
   ;; to whatever buffer a caller happened to be in.
   (let* ((windows (and restore (with-current-buffer (window-buffer (selected-window))
                                  (current-window-configuration))))
-         (out (get-text-property pos 'org-dock))
-         (buffer (if out
+         (out (get-text-property (if (and (= pos (point-max)) (> pos (point-min)))
+                                     (1- pos)
+                                   pos)
+                                 'org-dock))
+         (buffer (if (and out (or (not whole) (org-dock--session-whole out)))
                      (org-dock--open-copy out)
-                   (org-dock--take-out pos at windows finish abort))))
+                   (org-dock--take-out pos whole at windows finish abort))))
     (when display (org-dock--show buffer))
     buffer))
 
-(defun org-dock--take-out (pos at windows finish abort)
+(defun org-dock--take-out (pos whole at windows finish abort)
   "Take the heading at POS, which is not out, out into its copy.
-Return the copy's buffer.  AT, WINDOWS, FINISH and ABORT are as for
-`org-dock-heading', WINDOWS being the configuration to put back."
-  (let* ((bounds (org-dock--bounds pos))
+Return the copy's buffer.  WHOLE, AT, WINDOWS, FINISH and ABORT are as
+for `org-dock-heading', WINDOWS being the configuration to put back."
+  (let* ((whole (or whole (org-with-wide-buffer
+                           (goto-char pos)
+                           (org-before-first-heading-p))))
+         (bounds (org-dock--bounds pos whole))
          (beg (car bounds))
          (end (cdr bounds)))
     (when (text-property-not-all beg end 'org-dock nil)
-      (user-error "org-dock: a heading under this one is out; write it back first"))
+      (user-error (if whole
+                      "org-dock: a heading of this file is out; write it back first"
+                    "org-dock: a heading under this one is out; write it back first")))
     (let* ((text (buffer-substring-no-properties beg end))
            (session (or (org-dock--live-session text)
                         (org-dock--new-session
-                         text (save-excursion (goto-char beg) (org-get-heading t t t t))))))
+                         text (if whole
+                                  (org-dock--title)
+                                (save-excursion (goto-char beg) (org-get-heading t t t t)))
+                         whole))))
       (setf (org-dock--session-origin session) (current-buffer)
             (org-dock--session-windows session) windows
             (org-dock--session-finish session) finish
@@ -452,12 +479,13 @@ Out of this buffer itself, when it visits no file.  Nil when there is none."
                      (eq (org-dock--session-origin s) (current-buffer)))))
             (org-dock--live-sessions)))
 
-(defun org-dock--new-session (text heading)
+(defun org-dock--new-session (text heading &optional whole)
   "Return a session of TEXT, the heading HEADING of this buffer, with a copy.
-The copy is one left from before when it is to be gone on with, or else
-one written now."
+WHOLE says TEXT is the whole buffer, HEADING its title.  The copy is one
+left from before when it is to be gone on with, or else one written now."
   (let ((session (org-dock--make-session
                   :file buffer-file-name :original text :heading heading
+                  :whole whole
                   :copy (org-dock--leftover-copy text))))
     (unless (org-dock--session-copy session)
       (make-directory org-dock-directory t)
@@ -629,15 +657,20 @@ property can hold one."
   "Return what an agent is told about the copy REQUEST names.
 REQUEST is the plist `org-dock-agent-function' gets.  The copy, the only
 file to edit; the file the heading is in, not to be edited; where `here'
-is; and the files the links point to.  Then what
+is; and the files the links point to, a directory to be read through.
+When the copy is the whole file, the file is said to be written by
+writing the copy.  Then what
 `org-dock-request-functions' add, each a section of its own."
   (let ((region (plist-get request :region))
         (links (plist-get request :links)))
     (concat
      "## Files\n\n"
      (format "- The copy, the only file to edit:\n  %s\n" (plist-get request :copy))
-     (format "- The file the heading is in: read it when you need what is around the\n  heading, and do not edit it.\n  %s\n"
-             (plist-get request :origin))
+     (if (plist-get request :whole)
+         (format "- The file the copy is the whole of: do not edit it.  What you write\n  in the copy is written over it when I am done.\n  %s\n"
+                 (plist-get request :origin))
+       (format "- The file the heading is in: read it when you need what is around the\n  heading, and do not edit it.\n  %s\n"
+               (plist-get request :origin)))
      "\n## Here\n\n"
      (if region
          (format "When my instruction points at a place, \"here\" is line %d of the copy,\nand \"the selection\" is lines %d to %d of the copy.\n"
@@ -646,8 +679,13 @@ is; and the files the links point to.  Then what
                (plist-get request :line)))
      (when links
        (concat "\n## Linked files\n\n"
-               "The links in the copy point to these files.  Read a file when you need what it says.\n\n"
-               (mapconcat (lambda (l) (format "- %s\n  %s" (car l) (cdr l))) links "\n")
+               "The links in the copy point to these files.  Read a file when you need what it says;\na directory, the files in it.\n\n"
+               (mapconcat (lambda (l)
+                            (format "- %s\n  %s" (car l)
+                                    (if (file-directory-p (cdr l))
+                                        (file-name-as-directory (cdr l))
+                                      (cdr l))))
+                          links "\n")
                "\n"))
      (mapconcat (lambda (part) (concat "\n" (string-trim part) "\n"))
                 (delq nil (mapcar (lambda (fn) (funcall fn request))
@@ -670,6 +708,7 @@ the agent is spoken to."
                           :origin (or (org-dock--session-file session)
                                       (org-dock--origin-name session))
                           :heading (org-dock--session-heading session)
+                          :whole (org-dock--session-whole session)
                           :links links
                           :files (delete-dups (mapcar #'cdr links))
                           :line (line-number-at-pos)

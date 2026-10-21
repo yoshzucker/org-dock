@@ -15,6 +15,9 @@ copy writes it back.  While the heading is out it cannot be changed in its
 file: whatever happens to it happens in the copy, and nothing outside the
 heading changes at all.
 
+Before the first heading, or with ~C-u~, the whole file is taken out the
+same way: for a first draft of all of it, written by an agent at one go.
+
 That bound is what lets an agent be asked without a second thought.  The
 agent is given the copy to write and nothing else; the file the heading
 lives in, and the files its links point to, are given to be read.  What it
@@ -38,6 +41,7 @@ line on a board drawn from a file, a document read beside its notes.
 | Key       | Command              | Does                                                 |
 |-----------+----------------------+------------------------------------------------------|
 |           | ~org-dock~           | take the heading at point out into its copy          |
+| ~C-u~     | ~org-dock~           | take the whole file out; so too before any heading   |
 | ~C-c C-c~ | ~org-dock-finish~    | in the copy: write it back over the heading and save |
 | ~C-c C-k~ | ~org-dock-abort~     | in the copy: let it go; the heading stays as it was  |
 | ~C-c C-;~ | ~org-dock-ask-agent~ | in the copy: make an agent ready to work on it       |
@@ -59,6 +63,11 @@ can still be written right before it and right after it.  Doing
 ~org-dock~ again on the heading shows its copy.  A heading with a heading
 under it that is out is not taken out, since writing it back would write
 over the other.
+
+The whole file taken out is named by its ~#+title~, or by the file's
+name.  While it is out, no heading of it can be taken out; a file with a
+heading out is not taken out whole.  Written back, it may hold headings at
+any level.
 
 ~C-c C-c~ finds the heading where it was taken out -- text written above
 it in the meantime does not matter -- or, if the file was changed on disk
@@ -82,7 +91,8 @@ heading, unchanged, is taken out.
 |------------+----------------------------------------------------------|
 | ~:copy~    | the copy, the one file the agent is to write             |
 | ~:origin~  | the file the heading was taken out of, to read only      |
-| ~:heading~ | the heading's title                                      |
+| ~:heading~ | the heading's title, or the file's when it is whole      |
+| ~:whole~   | non-nil when the copy is the whole file                  |
 | ~:request~ | a file telling the agent all of this, to be read first   |
 | ~:links~   | the copy's links that point to files, as ~(LINK . FILE)~ |
 | ~:files~   | those files, each once                                   |
@@ -95,7 +105,9 @@ shows each change to a file before it is made, the change to the copy is
 looked over there, and the copy's buffer follows its file as it changes.
 
 The request file says which file to write and which to leave, where point
-is, and what each link points to.  ~org-dock-link-file-functions~ finds the
+is, and what each link points to.  A link to a directory is given as one,
+to be read through: a directory of whatever might bear on a draft, linked
+from the file, is handed over with it.  ~org-dock-link-file-functions~ finds the
 file a link points to: ~file:~ and ~attachment:~ links are known, and a
 package with links of its own adds a function for them.  A link in a
 property counts.  ~org-dock-request-functions~ add to the request what a

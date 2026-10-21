@@ -93,6 +93,7 @@ heading, unchanged, is taken out.
 | ~:origin~  | the file the heading was taken out of, to read only      |
 | ~:heading~ | the heading's title, or the file's when it is whole      |
 | ~:whole~   | non-nil when the copy is the whole file                  |
+| ~:lines~   | ~(FIRST . LAST)~, the lines of the file the copy is of   |
 | ~:request~ | a file telling the agent all of this, to be read first   |
 | ~:links~   | the copy's links that point to files, as ~(LINK . FILE)~ |
 | ~:files~   | those files, each once                                   |
@@ -119,7 +120,9 @@ kind of file needs said: the rules it keeps to, how it cites.
 the copy (~:at~), what to do once it is written back (~:finish~, given the
 heading's new bounds) or let go (~:abort~), whether to show it
 (~:display~) and to put the windows back (~:restore~).
-~org-dock-origin-file~ says, in a copy, which file its heading came from.
+~org-dock-origin-file~ says, in a copy, which file its heading came from;
+~org-dock-copy-origin~ says it of a copy's file, outside the Emacs that
+took it out -- for a command an agent runs on the copy.
 
 * Settings
 

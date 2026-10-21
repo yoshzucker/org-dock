@@ -79,6 +79,8 @@ Called by \\[org-dock-ask-agent] with a plist:
   :origin   the file the heading was taken out of, to read and not write
   :heading  the heading's title, or the file's when :whole
   :whole    non-nil when the copy is the whole of the file
+  :lines    (FIRST . LAST), the lines of that file the copy is of, or nil
+            when the heading is not found there as it was taken out
   :request  a file telling the agent all of this, to be read first
   :links    the copy's links that point to files, as (NAME . FILE)
   :files    those files, each once
@@ -656,21 +658,22 @@ property can hold one."
 (defun org-dock-request-text (request)
   "Return what an agent is told about the copy REQUEST names.
 REQUEST is the plist `org-dock-agent-function' gets.  The copy, the only
-file to edit; the file the heading is in, not to be edited; where `here'
-is; and the files the links point to, a directory to be read through.
-When the copy is the whole file, the file is said to be written by
-writing the copy.  Then what
-`org-dock-request-functions' add, each a section of its own."
+file to edit; the file it came from, not to be edited, and which of its
+lines the copy is; where `here' is; and the files the links point to, a
+directory to be read through.  Then what `org-dock-request-functions'
+add, each a section of its own.  The same words whatever was taken out,
+a heading or the whole file; only what they name differs."
   (let ((region (plist-get request :region))
+        (lines (plist-get request :lines))
         (links (plist-get request :links)))
     (concat
      "## Files\n\n"
      (format "- The copy, the only file to edit:\n  %s\n" (plist-get request :copy))
-     (if (plist-get request :whole)
-         (format "- The file the copy is the whole of: do not edit it.  What you write\n  in the copy is written over it when I am done.\n  %s\n"
-                 (plist-get request :origin))
-       (format "- The file the heading is in: read it when you need what is around the\n  heading, and do not edit it.\n  %s\n"
-               (plist-get request :origin)))
+     (format "- The file it came from: read it when you need what is around the copy,\n  and do not edit it.%s\n  %s\n"
+             (cond ((plist-get request :whole) "  The copy is all of it.")
+                   (lines (format "  The copy is lines %d to %d of it." (car lines) (cdr lines)))
+                   (t ""))
+             (plist-get request :origin))
      "\n## Here\n\n"
      (if region
          (format "When my instruction points at a place, \"here\" is line %d of the copy,\nand \"the selection\" is lines %d to %d of the copy.\n"
@@ -704,11 +707,17 @@ the agent is spoken to."
     (when (buffer-modified-p) (save-buffer))
     (let* ((links (org-dock-links))
            (copy (org-dock--session-copy session))
+           (bounds (with-current-buffer (org-dock--origin-buffer session)
+                     (org-with-wide-buffer
+                      (when-let* ((b (org-dock--find session)))
+                        (cons (line-number-at-pos (car b))
+                              (org-dock--line-at (cdr b) t))))))
            (request (list :copy copy
                           :origin (or (org-dock--session-file session)
                                       (org-dock--origin-name session))
                           :heading (org-dock--session-heading session)
                           :whole (org-dock--session-whole session)
+                          :lines bounds
                           :links links
                           :files (delete-dups (mapcar #'cdr links))
                           :line (line-number-at-pos)
@@ -726,6 +735,18 @@ the agent is spoken to."
 For reading the copy as its heading would be read where it lives."
   (let ((session (buffer-local-value 'org-dock--session (or buffer (current-buffer)))))
     (and session (org-dock--session-file session))))
+
+(defun org-dock-copy-origin (copy)
+  "Return where the copy in the file COPY came from, or nil when it is no copy.
+As a plist: :file, the file its heading was taken out of, and :original,
+the text taken out.  Read from the file kept beside COPY, so that it is
+known outside the Emacs that took the heading out: to a command an agent
+runs, say."
+  (let ((meta (org-dock--meta-file copy)))
+    (when (file-exists-p meta)
+      (let ((plist (ignore-errors (org-dock--read-meta meta))))
+        (and (plist-get plist :file) (stringp (plist-get plist :original))
+             (list :file (plist-get plist :file) :original (plist-get plist :original)))))))
 
 (defun org-dock-copy-of (pos)
   "Return the buffer of the copy of the heading out at POS, or nil.

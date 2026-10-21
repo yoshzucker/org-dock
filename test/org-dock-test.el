@@ -288,6 +288,8 @@ write, what to read, where point is, and what others add."
           (should (string-match-p (regexp-quote buffer-file-name) text))
           (should (string-match-p (regexp-quote file) text))
           (should (string-match-p "\"here\" is line 8 of the copy" text))
+          (should (equal (plist-get got :lines) '(4 . 10)))
+          (should (string-match-p "The copy is lines 4 to 10 of it\\." text))
           (should (string-match-p "Rules of mine\\." text)))))))
 
 (ert-deftest org-dock-test-headings-beside-not-above ()
@@ -347,7 +349,7 @@ one."
           (should (plist-get got :whole))
           (should (equal (plist-get got :files) (list (expand-file-name "drafts/" dir))))
           (let ((text (org-dock-test--file-text (plist-get got :request))))
-            (should (string-match-p "the whole of" text))
+            (should (string-match-p "The copy is all of it\\." text))
             (should (string-match-p (regexp-quote (file-name-as-directory
                                                    (expand-file-name "drafts" dir)))
                                     text))))
@@ -375,6 +377,16 @@ while a heading of it is out."
     (org-dock-test--goto "Child")
     (org-dock-test--dock)
     (should-error (org-dock-test--dock :whole t) :type 'user-error)))
+
+(ert-deftest org-dock-test-copy-origin ()
+  "Where a copy came from is read from its file alone, as a command run
+outside Emacs would; a file that is no copy came from nowhere."
+  (org-dock-test--with-file org-dock-test--text
+    (org-dock-test--goto "Topic")
+    (let ((copy (buffer-file-name (org-dock-test--dock))))
+      (should (equal (org-dock-copy-origin copy)
+                     (list :file file :original org-dock-test--topic)))
+      (should-not (org-dock-copy-origin file)))))
 
 (ert-deftest org-dock-test-copy-file-name ()
   "A copy is named by the time and its heading, with nothing in the name a

@@ -50,6 +50,12 @@
 ARGS are those of `org-dock-heading' after its position."
   (save-current-buffer (apply #'org-dock-heading (point) args)))
 
+(defun org-dock-test--header-line ()
+  "Return what this copy's header line says.
+As its form, which redisplay evaluates and batch does not."
+  (should (equal header-line-format '(:eval (org-dock--header-line))))
+  (org-dock--header-line))
+
 (defun org-dock-test--file-text (file)
   "Return what FILE holds on disk."
   (with-temp-buffer (insert-file-contents file) (buffer-string)))
@@ -322,7 +328,7 @@ the same, with nothing saved."
           (org-dock-test--goto "Topic")
           (let ((copy (org-dock-test--dock)))
             (with-current-buffer copy
-              (should (string-match-p "Out of" (format "%s" header-line-format)))
+              (should (string-match-p "Out of" (org-dock-test--header-line)))
               (goto-char (point-max))
               (insert "added\n")
               (org-dock-finish)))
@@ -395,6 +401,119 @@ shell or a prompt would take apart."
     (should (string-match-p "\\`[0-9]\\{8\\}T[0-9]\\{6\\}-承認は-部長が-先-a-b\\.org\\'"
                             (file-name-nondirectory
                              (org-dock--new-copy-file "承認は 部長が/先: a&b"))))))
+
+
+(ert-deftest org-dock-test-busy-keeps-the-copy ()
+  "While something else writes a copy, it is read-only, its header line
+says who, and it is neither written back, let go, nor handed to an agent;
+once it is done, the buffer takes up what was written."
+  (org-dock-test--with-file org-dock-test--text
+    (org-dock-test--goto "Topic")
+    (let ((org-dock-agent-function #'ignore)
+          (org-dock--busy nil))
+      (with-current-buffer (org-dock-test--dock)
+        (org-dock-set-busy buffer-file-name "Agent")
+        (should buffer-read-only)
+        (should (string-match-p "\\`Agent is writing" (org-dock-test--header-line)))
+        (should-error (org-dock-finish) :type 'user-error)
+        (should-error (org-dock-abort) :type 'user-error)
+        (should-error (org-dock-ask-agent) :type 'user-error)
+        ;; The agent writes the file, and is done.
+        (with-temp-file buffer-file-name
+          (insert org-dock-test--topic "written\n"))
+        (set-file-times buffer-file-name (time-add nil 2))
+        (org-dock-set-busy buffer-file-name nil)
+        (should-not buffer-read-only)
+        (should (string-suffix-p "written\n" (buffer-string)))
+        (org-dock-finish))
+      (should (string-match-p "under\nwritten\n\\* After" (buffer-string))))))
+
+(ert-deftest org-dock-test-header-line-says-the-keys ()
+  "The header line gives the keys of a copy, an agent's when there is one."
+  (org-dock-test--with-file org-dock-test--text
+    (org-dock-test--goto "Topic")
+    (let ((org-dock-agent-function nil)
+          (org-dock-background-agent-function nil))
+      (with-current-buffer (org-dock-test--dock)
+        (let ((line (org-dock-test--header-line)))
+          (should (string-match-p "C-c C-c write back" line))
+          (should (string-match-p "C-c C-k let go" line))
+          (should (string-match-p "C-c C-= changes" line))
+          (should-not (string-match-p "agent\\|background" line)))
+        (let* ((org-dock-agent-function #'ignore)
+               (org-dock-background-agent-function #'ignore)
+               (line (org-dock-test--header-line)))
+          (should (string-match-p "C-c C-; ask an agent" line))
+          (should (string-match-p "C-c C-' ask in the background" line)))))))
+
+(ert-deftest org-dock-test-ask-agent-background ()
+  "The background agent is handed what the agent is, and a copy with no
+such function says so."
+  (org-dock-test--with-file org-dock-test--text
+    (org-dock-test--goto "Topic")
+    (let* (got
+           (org-dock-background-agent-function (lambda (request) (setq got request))))
+      (with-current-buffer (org-dock-test--dock)
+        (org-dock-ask-agent-background)
+        (should (equal (plist-get got :copy) buffer-file-name))
+        (should (file-exists-p (plist-get got :request)))
+        (let ((org-dock-background-agent-function nil))
+          (should-error (org-dock-ask-agent-background) :type 'user-error))))))
+
+(ert-deftest org-dock-test-files-beside-go-with-the-copy ()
+  "Written back, a copy takes with it every file named by it, and no other."
+  (org-dock-test--with-file org-dock-test--text
+    (org-dock-test--goto "Topic")
+    (with-current-buffer (org-dock-test--dock)
+      (let* ((stem (file-name-sans-extension buffer-file-name))
+             (beside (concat stem ".result.json"))
+             (other (concat stem "-2.org")))
+        (with-temp-file beside (insert "{}"))
+        (with-temp-file other (insert "* Other\n"))
+        (org-dock-finish)
+        (should-not (file-exists-p beside))
+        (should-not (file-exists-p (concat stem ".org")))
+        (should-not (file-exists-p (concat stem ".eld")))
+        (should (file-exists-p other))))))
+
+(ert-deftest org-dock-test-list-the-copies ()
+  "The list has a line for each copy, open or not, saying what it is in,
+with what the status functions add; a copy not open is taken out again
+from there, gone on with without asking."
+  (org-dock-test--with-file org-dock-test--text
+    (org-dock-test--goto "Topic")
+    (let* ((org-dock-status-functions (list (lambda (_) "done")))
+           (copy (org-dock-test--dock))
+           (copy-file (buffer-file-name copy)))
+      (with-current-buffer copy
+        (goto-char (point-max))
+        (insert "kept\n")
+        (save-buffer))
+      (let ((entry (assoc copy-file (org-dock--list-entries))))
+        (should (equal (car entry) copy-file))
+        (should (equal (aref (cadr entry) 1) "Topic"))
+        (should (equal (aref (cadr entry) 2) "notes.org"))
+        (should (equal (aref (cadr entry) 3) "changed"))
+        (should (equal (aref (cadr entry) 4) "done")))
+      ;; Emacs stops: the copy's buffer goes, and the heading's keeping.
+      (kill-buffer copy)
+      (let ((inhibit-read-only t))
+        (with-silent-modifications
+          (set-text-properties (point-min) (point-max) nil)))
+      (should (equal (aref (cadr (assoc copy-file (org-dock--list-entries))) 3)
+                     "changed, not open"))
+      (with-temp-buffer
+        (org-dock-list-mode)
+        (setq tabulated-list-entries (org-dock--list-entries))
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (while (not (equal (tabulated-list-get-id) copy-file)) (forward-line 1))
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) (error "Asked"))))
+          (save-window-excursion (org-dock-list-open))))
+      (let ((again (find-buffer-visiting copy-file)))
+        (should again)
+        (with-current-buffer again (org-dock-finish)))
+      (should (string-match-p "under\nkept\n\\* After" (buffer-string))))))
 
 (provide 'org-dock-test)
 ;;; org-dock-test.el ends here

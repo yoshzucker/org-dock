@@ -1011,25 +1011,38 @@ its session."
         (user-error "org-dock: the copy is gone; %s" (substitute-command-keys "\\[revert-buffer] lists them again")))))
 
 (defun org-dock-list-open ()
-  "Go to the copy on this line, taking its heading out again when it is not open."
+  "Go to the copy on this line, taking its heading out again when it is not open.
+When the heading has changed in its file since, so that the copy has
+nowhere to go back to, offer to throw the copy away."
   (interactive)
   (let* ((copy (org-dock--list-copy))
          (file (plist-get copy :copy)))
     (if-let* ((buffer (find-buffer-visiting file)))
         (pop-to-buffer buffer)
-      (with-current-buffer (find-file-noselect (plist-get copy :file))
-        (let ((pos (org-with-wide-buffer
-                    (goto-char (point-min))
-                    (let ((case-fold-search nil)
-                          (text (plist-get copy :original)))
-                      (when (search-forward text nil t)
-                        (let ((found (match-beginning 0)))
-                          (unless (search-forward text nil t) found)))))))
-          (unless pos
-            (user-error "org-dock: the heading has changed in its file since it was taken out; the copy is kept, %s"
-                        (abbreviate-file-name file)))
-          (let ((org-dock--go-on file))
-            (org-dock-heading pos :whole (plist-get copy :whole))))))))
+      (let* ((origin (find-file-noselect (plist-get copy :file)))
+             (pos (with-current-buffer origin
+                    (org-with-wide-buffer
+                     (goto-char (point-min))
+                     (let ((case-fold-search nil)
+                           (text (plist-get copy :original)))
+                       (when (search-forward text nil t)
+                         (let ((found (match-beginning 0)))
+                           (unless (search-forward text nil t) found))))))))
+        (cond
+         (pos
+          (with-current-buffer origin
+            (let ((org-dock--go-on file))
+              (org-dock-heading pos :whole (plist-get copy :whole)))))
+         ((y-or-n-p (format "The heading has changed in its file since it was taken out; throw the %s copy away? "
+                            (if (string-match-p "\\bunchanged\\b" (org-dock--copy-state copy))
+                                "unchanged"
+                              "changed")))
+          (org-dock--delete-files file)
+          (when (derived-mode-p 'org-dock-list-mode)
+            (revert-buffer))
+          (message "org-dock: the copy is thrown away"))
+         (t
+          (message "org-dock: the copy is kept, %s" (abbreviate-file-name file))))))))
 
 (defun org-dock-list-diff ()
   "Compare the copy on this line with its heading as it was taken out."

@@ -97,7 +97,9 @@ it is written back.
 left when Emacs stopped, newest first, with whether each was changed and
 whether something is writing it.  ~RET~ goes to a copy, taking its
 heading out again if it is not open, and goes on with the copy without
-asking; ~=~ shows what was changed in it.
+asking; when the heading has changed in its file since, so that the copy
+has nowhere to go back to, it offers to throw the copy away instead.
+~=~ shows what was changed in it.
 
 * Asking an agent
 

@@ -515,5 +515,44 @@ from there, gone on with without asking."
         (with-current-buffer again (org-dock-finish)))
       (should (string-match-p "under\nkept\n\\* After" (buffer-string))))))
 
+(ert-deftest org-dock-test-list-a-copy-with-nowhere-to-go ()
+  "A copy whose heading has changed in its file since is not taken out
+again from the list; it is thrown away when that is agreed to, and kept
+when not."
+  (org-dock-test--with-file org-dock-test--text
+    (org-dock-test--goto "Topic")
+    (let* ((copy (org-dock-test--dock))
+           (copy-file (buffer-file-name copy))
+           asked)
+      (with-current-buffer copy
+        (goto-char (point-max))
+        (insert "kept\n")
+        (save-buffer))
+      ;; Emacs stops, and the heading is changed in its file after.
+      (kill-buffer copy)
+      (let ((inhibit-read-only t))
+        (with-silent-modifications
+          (set-text-properties (point-min) (point-max) nil))
+        (org-dock-test--goto "Topic")
+        (insert "* Renamed\n")
+        (delete-line))
+      (with-temp-buffer
+        (org-dock-list-mode)
+        (setq tabulated-list-entries (org-dock--list-entries))
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (while (not (equal (tabulated-list-get-id) copy-file)) (forward-line 1))
+        (cl-letf (((symbol-function 'y-or-n-p)
+                   (lambda (prompt) (setq asked prompt) nil)))
+          (save-window-excursion (org-dock-list-open)))
+        (should (string-match-p "the changed copy" asked))
+        (should (file-exists-p copy-file))
+        (should-not (find-buffer-visiting copy-file))
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+          (save-window-excursion (org-dock-list-open)))
+        (should-not (file-exists-p copy-file))
+        (should-not (file-exists-p (concat (file-name-sans-extension copy-file) ".eld")))
+        (should-not (assoc copy-file tabulated-list-entries))))))
+
 (provide 'org-dock-test)
 ;;; org-dock-test.el ends here

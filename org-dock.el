@@ -132,38 +132,13 @@ Each is called with the copy's file and returns a short string, or nil.
 What they return is shown, joined, in the list's last column: what an
 agent working in the background made of the copy, say.")
 
-;;;; A heading taken out
+;;;; Files in the dock
 
-(cl-defstruct (org-dock--session
-               (:constructor org-dock--make-session)
-               (:copier nil))
-  "A heading out in its copy."
-  origin        ; the buffer the heading is in
-  file          ; that buffer's file
-  beg end       ; markers around the heading and what is under it
-  original      ; their text when it was taken out
-  copy          ; the copy's file
-  heading       ; the heading's title
-  whole         ; non-nil when what is out is the whole file
-  windows       ; the window configuration to put back, or nil
-  finish        ; called once the copy is written back, or nil
-  abort)        ; called once the copy is let go, or nil
-
-(defvar-local org-dock--session nil
-  "In a copy's buffer, the heading it is a copy of.")
-(put 'org-dock--session 'permanent-local t)
-
-(defconst org-dock--locked
-  "This heading is out in its copy; C-c C-c there writes it back"
-  "What changing a heading that is out says.")
-
-(defun org-dock--meta-file (copy)
-  "Return the file kept beside COPY saying where it came from."
-  (concat (file-name-sans-extension copy) ".eld"))
-
-(defun org-dock--request-file (copy)
-  "Return the file telling an agent about COPY."
-  (concat (file-name-sans-extension copy) ".request.md"))
+(defun org-dock-beside (copy extension)
+  "Return the file beside COPY named by it and EXTENSION, which starts with a dot.
+Files so named go with the copy once it is written back or let go: what
+a function asking an agent keeps of it, say."
+  (concat (file-name-sans-extension copy) extension))
 
 (defun org-dock--new-copy-file (heading)
   "Return a file in `org-dock-directory' for a new copy of HEADING.
@@ -184,10 +159,7 @@ an agent's prompt would take apart."
     file))
 
 (defun org-dock--delete-files (copy)
-  "Delete COPY and the files kept beside it.
-Those are the files named by COPY's name and an extension of their own:
-the meta file, the request, and whatever else an agent function keeps
-there for the copy."
+  "Delete COPY and the files kept beside it, as `org-dock-beside' names them."
   (let ((stem (file-name-nondirectory (file-name-sans-extension copy))))
     (when (file-directory-p (file-name-directory copy))
       (dolist (file (directory-files (file-name-directory copy) t
@@ -199,30 +171,107 @@ there for the copy."
   (let ((coding-system-for-write 'utf-8-unix))
     (with-temp-file file (insert text))))
 
-(defun org-dock--read-meta (file)
-  "Return the plist in FILE, written by `org-dock--write-meta'."
+(defun org-dock--read (file)
+  "Return what FILE holds, read as UTF-8."
   (with-temp-buffer
     (let ((coding-system-for-read 'utf-8))
       (insert-file-contents file))
-    (read (current-buffer))))
+    (buffer-string)))
+
+(defun org-dock--meta (session)
+  "Return what is kept beside SESSION's copy of where it came from, as a plist.
+With :file, :heading, :original and :whole."
+  (list :file (org-dock--session-file session)
+        :heading (org-dock--session-heading session)
+        :original (org-dock--session-original session)
+        :whole (org-dock--session-whole session)))
 
 (defun org-dock--write-meta (session)
-  "Write beside SESSION's copy where it came from and what it was.
+  "Write beside SESSION's copy where it came from, what it was, and when.
 So that a copy left when Emacs stopped can be gone on with."
   (let ((print-length nil) (print-level nil))
-    (org-dock--write (org-dock--meta-file (org-dock--session-copy session))
+    (org-dock--write (org-dock-beside (org-dock--session-copy session) ".eld")
                      (prin1-to-string
-                      (list :file (org-dock--session-file session)
-                            :heading (org-dock--session-heading session)
-                            :original (org-dock--session-original session)
-                            :whole (org-dock--session-whole session)
-                            :time (format-time-string "%F %R"))))))
+                      (append (org-dock--meta session)
+                              (list :time (format-time-string "%F %R")))))))
+
+(defun org-dock--saved-copy (meta-file)
+  "Return the copy META-FILE was written beside, as its plist with :copy.
+Nil when the copy is gone, or META-FILE does not say where it came from."
+  (let ((copy (org-dock-beside meta-file ".org"))
+        (meta (ignore-errors (car (read-from-string (org-dock--read meta-file))))))
+    (and (file-exists-p copy)
+         (proper-list-p meta)
+         (plist-get meta :file)
+         (stringp (plist-get meta :original))
+         (plist-put meta :copy copy))))
+
+(defun org-dock--saved-copies ()
+  "Return the copies in the dock that say where they came from, as plists."
+  (when (file-directory-p org-dock-directory)
+    (delq nil (mapcar #'org-dock--saved-copy
+                      (directory-files org-dock-directory t "\\.eld\\'")))))
+
+;;;; A heading taken out
+
+(cl-defstruct (org-dock--session
+               (:constructor org-dock--make-session)
+               (:copier nil))
+  "A heading out in its copy."
+  buffer        ; the buffer the heading is in
+  file          ; that buffer's file
+  beg end       ; markers around the heading and what is under it
+  original      ; their text when it was taken out
+  copy          ; the copy's file
+  heading       ; the heading's title
+  whole         ; non-nil when what is out is the whole file
+  windows       ; the window configuration to put back, or nil
+  finish        ; called once the copy is written back, or nil
+  abort)        ; called once the copy is let go, or nil
+
+(defvar-local org-dock--session nil
+  "In a copy's buffer, the heading it is a copy of.")
+(put 'org-dock--session 'permanent-local t)
+
+(defconst org-dock--locked
+  "This heading is out in its copy; C-c C-c there writes it back"
+  "What changing a heading that is out says.")
+
+(defun org-dock--open-sessions ()
+  "Return the sessions whose copies are open."
+  (delq nil (mapcar (lambda (buffer) (buffer-local-value 'org-dock--session buffer))
+                    (buffer-list))))
+
+(defun org-dock--out-at (pos)
+  "Return the session of the heading out at POS in this buffer, or nil.
+At the end of the buffer, of the character before it."
+  (get-text-property (if (and (= pos (point-max)) (> pos (point-min)))
+                         (1- pos)
+                       pos)
+                     'org-dock))
 
 (defun org-dock--origin-name (session)
   "Return the name of SESSION's file, or of its buffer when it has none."
   (if (org-dock--session-file session)
       (file-name-nondirectory (org-dock--session-file session))
-    (buffer-name (org-dock--session-origin session))))
+    (buffer-name (org-dock--session-buffer session))))
+
+(defun org-dock--heading-buffer (session)
+  "Return the buffer of SESSION's heading, visiting its file again if closed."
+  (let ((buffer (org-dock--session-buffer session)))
+    (unless (buffer-live-p buffer)
+      (unless (org-dock--session-file session)
+        (user-error "org-dock: the buffer the heading was in is gone; the copy is kept, %s"
+                    (abbreviate-file-name (org-dock--session-copy session))))
+      (setq buffer (find-file-noselect (org-dock--session-file session)))
+      (setf (org-dock--session-buffer session) buffer))
+    buffer))
+
+(defun org-dock--heading-directory (session)
+  "Return the directory SESSION's heading is read in: its file's, or its buffer's."
+  (if (org-dock--session-file session)
+      (file-name-directory (org-dock--session-file session))
+    (buffer-local-value 'default-directory (org-dock--session-buffer session))))
 
 (defun org-dock--bounds (pos &optional whole)
   "Return (BEG . END) of the heading at POS with everything under it.
@@ -234,12 +283,22 @@ With WHOLE, of the whole buffer."
      (org-back-to-heading t)
      (cons (point) (progn (org-end-of-subtree t t) (point))))))
 
-(defun org-dock--title ()
+(defun org-dock--file-title ()
   "Return what names the whole of this buffer: its title, or its file's name."
   (or (org-get-title)
       (if buffer-file-name
           (file-name-base buffer-file-name)
         (buffer-name))))
+
+(defun org-dock--search-once (text)
+  "Return (BEG . END) of TEXT in this buffer when it is there once, else nil."
+  (org-with-wide-buffer
+   (goto-char (point-min))
+   (let ((case-fold-search nil))
+     (when (search-forward text nil t)
+       (let ((found (cons (match-beginning 0) (match-end 0))))
+         (unless (search-forward text nil t)
+           found))))))
 
 ;;;; Keeping the heading as it was
 
@@ -249,7 +308,7 @@ Text can still be written right before and right after it: before, since
 read-only text does not reach forward, and after, because its last
 character is told not to reach back -- Emacs asks that character alone,
 whatever `text-property-default-nonsticky' says."
-  (with-current-buffer (org-dock--session-origin session)
+  (with-current-buffer (org-dock--session-buffer session)
     (let ((beg (org-dock--session-beg session))
           (end (org-dock--session-end session)))
       (with-silent-modifications
@@ -262,7 +321,7 @@ whatever `text-property-default-nonsticky' says."
 
 (defun org-dock--unlock (session)
   "Let SESSION's heading be changed in its file again, wherever it is now."
-  (let ((buffer (org-dock--session-origin session)))
+  (let ((buffer (org-dock--session-buffer session)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (org-with-wide-buffer
@@ -279,17 +338,6 @@ whatever `text-property-default-nonsticky' says."
                        (remove-text-properties (1- end) end '(rear-nonsticky nil)))))
                  (setq pos end))))))))))
 
-(defun org-dock--origin-buffer (session)
-  "Return the buffer of SESSION's file, visiting it again if it was closed."
-  (let ((buffer (org-dock--session-origin session)))
-    (unless (buffer-live-p buffer)
-      (unless (org-dock--session-file session)
-        (user-error "org-dock: the buffer the heading was in is gone; the copy is kept, %s"
-                    (abbreviate-file-name (org-dock--session-copy session))))
-      (setq buffer (find-file-noselect (org-dock--session-file session)))
-      (setf (org-dock--session-origin session) buffer))
-    buffer))
-
 (defun org-dock--find (session)
   "Return (BEG . END) of SESSION's heading in this buffer, as it was taken out.
 Where its markers say, while the text there is still the text taken out;
@@ -302,13 +350,7 @@ else wherever that text is found once, and only once.  Nil when it is not."
          (end (and beg (markerp end) (marker-position end))))
     (if (and beg end (string= (buffer-substring-no-properties beg end) text))
         (cons beg end)
-      (org-with-wide-buffer
-       (goto-char (point-min))
-       (let ((case-fold-search nil))
-         (when (search-forward text nil t)
-           (let ((found (cons (match-beginning 0) (match-end 0))))
-             (unless (search-forward text nil t)
-               found))))))))
+      (org-dock--search-once text))))
 
 (defun org-dock--release-markers (session)
   "Let go of SESSION's markers, so they no longer slow its buffer."
@@ -320,7 +362,7 @@ else wherever that text is found once, and only once.  Nil when it is not."
 Text written right before the heading goes before the start, and right
 after it after the end, so the markers hold the heading alone."
   (org-dock--release-markers session)
-  (with-current-buffer (org-dock--session-origin session)
+  (with-current-buffer (org-dock--session-buffer session)
     (setf (org-dock--session-beg session) (copy-marker (car bounds) t)
           (org-dock--session-end session) (copy-marker (cdr bounds) nil))
     (add-hook 'after-revert-hook #'org-dock--relock nil t))
@@ -331,8 +373,8 @@ after it after the end, so the markers hold the heading alone."
 A revert can take the text's properties with it: the file changed on
 disk, a sync from another machine, say.  A heading found as it was taken
 out is kept again; one that is not is left for its copy to say so."
-  (dolist (session (org-dock--live-sessions))
-    (when (eq (org-dock--session-origin session) (current-buffer))
+  (dolist (session (org-dock--open-sessions))
+    (when (eq (org-dock--session-buffer session) (current-buffer))
       (if-let* ((bounds (org-dock--find session)))
           (org-dock--place session bounds)
         (message "org-dock: %s changed on disk while a heading was out"
@@ -362,10 +404,10 @@ Once it is not, the buffer takes up what was written to its file."
     (when-let* ((buffer (find-buffer-visiting copy)))
       (with-current-buffer buffer
         (unless who (org-dock--catch-up))
-        (org-dock--keep-busy)
+        (org-dock--follow-busy)
         (force-mode-line-update)))))
 
-(defun org-dock--keep-busy ()
+(defun org-dock--follow-busy ()
   "Make this copy's buffer read-only while it is busy, and not after."
   (if (org-dock-busy buffer-file-name)
       (unless buffer-read-only
@@ -374,11 +416,6 @@ Once it is not, the buffer takes up what was written to its file."
     (when org-dock--made-read-only
       (setq buffer-read-only nil
             org-dock--made-read-only nil))))
-
-(defun org-dock--not-busy ()
-  "Signal when this copy is being written by something else."
-  (when-let* ((who (org-dock-busy buffer-file-name)))
-    (user-error "org-dock: %s is writing this copy; wait until it is done" who)))
 
 (defun org-dock--catch-up ()
   "Read this buffer's file again when it changed on disk and the buffer did not."
@@ -426,13 +463,21 @@ Once it is not, the buffer takes up what was written to its file."
   "Return the session of the copy in this buffer, or signal."
   (or org-dock--session (user-error "org-dock: this is not a copy")))
 
+(defun org-dock--here-free (&optional save)
+  "Return the session of the copy in this buffer, which nothing else is writing.
+Signal when this is no copy, or something else is writing it.  With
+SAVE, save the copy first."
+  (let ((session (org-dock--here)))
+    (when-let* ((who (org-dock-busy buffer-file-name)))
+      (user-error "org-dock: %s is writing this copy; wait until it is done" who))
+    (when (and save (buffer-modified-p)) (save-buffer))
+    session))
+
 (defun org-dock--open-copy (session)
   "Return the buffer of SESSION's copy, set up to be worked on."
-  (let* ((buffer (find-file-noselect (org-dock--session-copy session)))
-         (origin (org-dock--session-origin session))
-          (dir (if (org-dock--session-file session)
-                  (file-name-directory (org-dock--session-file session))
-                (buffer-local-value 'default-directory origin))))
+  (let ((buffer (find-file-noselect (org-dock--session-copy session)))
+        (origin (org-dock--session-buffer session))
+        (dir (org-dock--heading-directory session)))
     (with-current-buffer buffer
       (setq org-dock--session session)
       ;; Links and attachments are read as they would be in the heading's
@@ -446,40 +491,29 @@ Once it is not, the buffer takes up what was written to its file."
       (unless (bound-and-true-p auto-revert-mode) (auto-revert-mode 1))
       ;; Reading the file again can make the buffer writable; one that is
       ;; busy stays as it is.
-      (add-hook 'after-revert-hook #'org-dock--keep-busy nil t)
-      (org-dock--keep-busy))
+      (add-hook 'after-revert-hook #'org-dock--follow-busy nil t)
+      (org-dock--follow-busy))
     buffer))
+
+(defun org-dock--current-text (copy)
+  "Return the text of the copy in the file COPY: its buffer's, when it is open."
+  (if-let* ((buffer (find-buffer-visiting copy)))
+      (with-current-buffer buffer
+        (buffer-substring-no-properties (point-min) (point-max)))
+    (org-dock--read copy)))
+
+(defun org-dock--ended-as (text original)
+  "Return TEXT, ended with a newline when ORIGINAL is and TEXT is not.
+A copy's file may lose the newline at its end; the heading keeps its own."
+  (if (and (string-suffix-p "\n" original)
+           (not (string-suffix-p "\n" text)))
+      (concat text "\n")
+    text))
 
 (defun org-dock--copy-text (session)
   "Return the text of SESSION's copy, ended as the heading was."
-  (let ((text (with-current-buffer (find-buffer-visiting (org-dock--session-copy session))
-                (buffer-substring-no-properties (point-min) (point-max)))))
-    (if (and (string-suffix-p "\n" (org-dock--session-original session))
-             (not (string-suffix-p "\n" text)))
-        (concat text "\n")
-      text)))
-
-(defun org-dock--live-sessions ()
-  "Return the sessions whose copies are open."
-  (delq nil (mapcar (lambda (buffer) (buffer-local-value 'org-dock--session buffer))
-                    (buffer-list))))
-
-(defun org-dock--leftover (file text)
-  "Return a copy of TEXT taken out of FILE that is left in the dock, or nil.
-As a plist from its meta file, with :copy."
-  (when (file-directory-p org-dock-directory)
-    (seq-some
-     (lambda (meta-file)
-       (let* ((meta (ignore-errors (org-dock--read-meta meta-file)))
-              (copy (concat (file-name-sans-extension meta-file) ".org")))
-         (and meta
-              (equal (plist-get meta :original) text)
-              (file-exists-p copy)
-              (plist-get meta :file)
-              (file-equal-p (plist-get meta :file) file)
-              (not (find-buffer-visiting copy))
-              (plist-put meta :copy copy))))
-     (directory-files org-dock-directory t "\\.eld\\'"))))
+  (org-dock--ended-as (org-dock--current-text (org-dock--session-copy session))
+                      (org-dock--session-original session)))
 
 (defun org-dock--show (buffer)
   "Show the copy BUFFER in another window, as `org-capture' does."
@@ -522,10 +556,7 @@ window configuration from before is put back."
   ;; to whatever buffer a caller happened to be in.
   (let* ((windows (and restore (with-current-buffer (window-buffer (selected-window))
                                  (current-window-configuration))))
-         (out (get-text-property (if (and (= pos (point-max)) (> pos (point-min)))
-                                     (1- pos)
-                                   pos)
-                                 'org-dock))
+         (out (org-dock--out-at pos))
          (buffer (if (and out (or (not whole) (org-dock--session-whole out)))
                      (org-dock--open-copy out)
                    (org-dock--take-out pos whole at windows finish abort))))
@@ -547,13 +578,13 @@ for `org-dock-heading', WINDOWS being the configuration to put back."
                       "org-dock: a heading of this file is out; write it back first"
                     "org-dock: a heading under this one is out; write it back first")))
     (let* ((text (buffer-substring-no-properties beg end))
-           (session (or (org-dock--live-session text)
+           (session (or (org-dock--open-session text)
                         (org-dock--new-session
                          text (if whole
-                                  (org-dock--title)
+                                  (org-dock--file-title)
                                 (save-excursion (goto-char beg) (org-get-heading t t t t)))
                          whole))))
-      (setf (org-dock--session-origin session) (current-buffer)
+      (setf (org-dock--session-buffer session) (current-buffer)
             (org-dock--session-windows session) windows
             (org-dock--session-finish session) finish
             (org-dock--session-abort session) abort)
@@ -564,7 +595,7 @@ for `org-dock-heading', WINDOWS being the configuration to put back."
             (goto-char (min (point-max) (1+ (- at beg))))))
         buffer))))
 
-(defun org-dock--live-session (text)
+(defun org-dock--open-session (text)
   "Return the session of TEXT out of this buffer's file, with its copy open.
 Out of this buffer itself, when it visits no file.  Nil when there is none."
   (seq-find (lambda (s)
@@ -572,8 +603,8 @@ Out of this buffer itself, when it visits no file.  Nil when there is none."
                    (if buffer-file-name
                        (and (org-dock--session-file s)
                             (file-equal-p (org-dock--session-file s) buffer-file-name))
-                     (eq (org-dock--session-origin s) (current-buffer)))))
-            (org-dock--live-sessions)))
+                     (eq (org-dock--session-buffer s) (current-buffer)))))
+            (org-dock--open-sessions)))
 
 (defun org-dock--new-session (text heading &optional whole)
   "Return a session of TEXT, the heading HEADING of this buffer, with a copy.
@@ -582,7 +613,7 @@ left from before when it is to be gone on with, or else one written now."
   (let ((session (org-dock--make-session
                   :file buffer-file-name :original text :heading heading
                   :whole whole
-                  :copy (org-dock--leftover-copy text))))
+                  :copy (org-dock--left-copy-to-go-on text))))
     (unless (org-dock--session-copy session)
       (make-directory org-dock-directory t)
       (setf (org-dock--session-copy session) (org-dock--new-copy-file heading))
@@ -596,11 +627,20 @@ left from before when it is to be gone on with, or else one written now."
 (defvar org-dock--go-on nil
   "A copy left from before to go on with without asking: one chosen in a list.")
 
-(defun org-dock--leftover-copy (text)
+(defun org-dock--left-copy (file text)
+  "Return the copy of TEXT taken out of FILE that is left in the dock, or nil.
+Left: saved beside its meta file, and not open.  As its plist."
+  (seq-find (lambda (saved)
+              (and (equal (plist-get saved :original) text)
+                   (file-equal-p (plist-get saved :file) file)
+                   (not (find-buffer-visiting (plist-get saved :copy)))))
+            (org-dock--saved-copies)))
+
+(defun org-dock--left-copy-to-go-on (text)
   "Return a copy of TEXT left from this buffer's file, if it is gone on with.
 A copy left and not gone on with is thrown away, and nil returned."
   (when-let* ((left (and buffer-file-name
-                         (org-dock--leftover buffer-file-name text))))
+                         (org-dock--left-copy buffer-file-name text))))
     (if (or (and org-dock--go-on
                  (file-equal-p org-dock--go-on (plist-get left :copy)))
             (y-or-n-p (format "A copy of this heading from %s is left; go on with it (no throws it away)? "
@@ -660,44 +700,41 @@ Nor is it when the copy has a heading above its first heading's level,
 which written back would take in the headings after it in the file;
 headings at that level, or below, are written where the heading was."
   (interactive)
-  (let ((session (org-dock--here)))
-    (org-dock--not-busy)
-    (when (buffer-modified-p) (save-buffer))
-    (let ((text (org-dock--copy-text session))
-          (copy (org-dock--session-copy session)))
-      (when-let* ((line (org-dock--above-line text (org-dock--session-original session))))
-        (goto-char (point-min))
-        (forward-line (1- line))
-        (user-error "org-dock: line %d is a heading above the copy's own level; written back it would take in the headings after it"
-                    line))
-      (with-current-buffer (org-dock--origin-buffer session)
-        (org-with-wide-buffer
-         (let ((bounds (org-dock--find session))
-               (tick (buffer-chars-modified-tick)))
-           (unless bounds
-             (user-error "org-dock: the heading has changed in its file since it was taken out; the copy is kept, %s"
-                         (abbreviate-file-name copy)))
-           (org-dock--unlock session)
-           (unless (equal text (org-dock--session-original session))
-             (org-dock--replace (car bounds) (cdr bounds) text))
-           (when-let* ((finish (org-dock--session-finish session)))
-             (funcall finish (car bounds) (+ (car bounds) (length text))))
-           (unless (or (= tick (buffer-chars-modified-tick))
-                       (not buffer-file-name))
-             (save-buffer)))))
-      (org-dock--close session)
-      (message "org-dock: written back into %s" (org-dock--origin-name session)))))
+  (let* ((session (org-dock--here-free t))
+         (text (org-dock--copy-text session))
+         (original (org-dock--session-original session)))
+    (when-let* ((line (org-dock--above-line text original)))
+      (goto-char (point-min))
+      (forward-line (1- line))
+      (user-error "org-dock: line %d is a heading above the copy's own level; written back it would take in the headings after it"
+                  line))
+    (with-current-buffer (org-dock--heading-buffer session)
+      (org-with-wide-buffer
+       (let ((bounds (org-dock--find session))
+             (tick (buffer-chars-modified-tick)))
+         (unless bounds
+           (user-error "org-dock: the heading has changed in its file since it was taken out; the copy is kept, %s"
+                       (abbreviate-file-name (org-dock--session-copy session))))
+         (org-dock--unlock session)
+         (unless (equal text original)
+           (org-dock--replace (car bounds) (cdr bounds) text))
+         (when-let* ((finish (org-dock--session-finish session)))
+           (funcall finish (car bounds) (+ (car bounds) (length text))))
+         (unless (or (= tick (buffer-chars-modified-tick))
+                     (not buffer-file-name))
+           (save-buffer)))))
+    (org-dock--close session)
+    (message "org-dock: written back into %s" (org-dock--origin-name session))))
 
 (defun org-dock-abort ()
   "Let this copy go, leaving its heading as it was taken out."
   (interactive)
-  (let ((session (org-dock--here)))
-    (org-dock--not-busy)
+  (let ((session (org-dock--here-free)))
     (when (or (equal (org-dock--copy-text session) (org-dock--session-original session))
               (y-or-n-p "Let go of what was changed in the copy? "))
       (org-dock--unlock session)
       (when-let* ((abort (org-dock--session-abort session))
-                  (buffer (org-dock--session-origin session)))
+                  (buffer (org-dock--session-buffer session)))
         (when (buffer-live-p buffer)
           (with-current-buffer buffer (funcall abort))))
       (org-dock--close session))))
@@ -755,6 +792,32 @@ property can hold one."
                                (save-excursion (goto-char pos) (bolp)))
                           (1- pos)
                         pos)))
+
+(defun org-dock--lines-in-file (session)
+  "Return (FIRST . LAST), the lines of its file SESSION's heading is on, or nil.
+Nil when the heading is not found there as it was taken out."
+  (with-current-buffer (org-dock--heading-buffer session)
+    (org-with-wide-buffer
+     (when-let* ((bounds (org-dock--find session)))
+       (cons (line-number-at-pos (car bounds))
+             (org-dock--line-at (cdr bounds) t))))))
+
+(defun org-dock--request (session)
+  "Return what an agent is handed of SESSION's copy, but for :request.
+In the copy's buffer, where point and the region are read."
+  (let ((links (org-dock-links)))
+    (list :copy (org-dock--session-copy session)
+          :origin (or (org-dock--session-file session)
+                      (org-dock--origin-name session))
+          :heading (org-dock--session-heading session)
+          :whole (org-dock--session-whole session)
+          :lines (org-dock--lines-in-file session)
+          :links links
+          :files (delete-dups (mapcar #'cdr links))
+          :line (line-number-at-pos)
+          :region (and (use-region-p)
+                       (cons (org-dock--line-at (region-beginning))
+                             (org-dock--line-at (region-end) t))))))
 
 (defun org-dock-request-text (request)
   "Return what an agent is told about the copy REQUEST names.
@@ -814,33 +877,13 @@ do, and the copy is read-only while the agent writes it."
 
 (defun org-dock--ask (function variable)
   "Hand this copy to FUNCTION, the value of VARIABLE, with what it is to know."
-  (let ((session (org-dock--here)))
-    (unless function
-      (user-error "org-dock: no `%s'" variable))
-    (org-dock--not-busy)
-    (when (buffer-modified-p) (save-buffer))
-    (let* ((links (org-dock-links))
-           (copy (org-dock--session-copy session))
-           (bounds (with-current-buffer (org-dock--origin-buffer session)
-                     (org-with-wide-buffer
-                      (when-let* ((b (org-dock--find session)))
-                        (cons (line-number-at-pos (car b))
-                              (org-dock--line-at (cdr b) t))))))
-           (request (list :copy copy
-                          :origin (or (org-dock--session-file session)
-                                      (org-dock--origin-name session))
-                          :heading (org-dock--session-heading session)
-                          :whole (org-dock--session-whole session)
-                          :lines bounds
-                          :links links
-                          :files (delete-dups (mapcar #'cdr links))
-                          :line (line-number-at-pos)
-                          :region (and (use-region-p)
-                                       (cons (org-dock--line-at (region-beginning))
-                                             (org-dock--line-at (region-end) t)))))
-           (file (org-dock--request-file copy)))
-      (org-dock--write file (org-dock-request-text request))
-      (funcall function (append request (list :request file))))))
+  (org-dock--here)
+  (unless function
+    (user-error "org-dock: no `%s'" variable))
+  (let* ((request (org-dock--request (org-dock--here-free t)))
+         (file (org-dock-beside (plist-get request :copy) ".request.md")))
+    (org-dock--write file (org-dock-request-text request))
+    (funcall function (append request (list :request file)))))
 
 ;;;; Asked of a copy by other packages
 
@@ -856,18 +899,15 @@ As a plist: :file, the file its heading was taken out of, and :original,
 the text taken out.  Read from the file kept beside COPY, so that it is
 known outside the Emacs that took the heading out: to a command an agent
 runs, say."
-  (let ((meta (org-dock--meta-file copy)))
-    (when (file-exists-p meta)
-      (let ((plist (ignore-errors (org-dock--read-meta meta))))
-        (and (plist-get plist :file) (stringp (plist-get plist :original))
-             (list :file (plist-get plist :file) :original (plist-get plist :original)))))))
+  (when-let* ((saved (org-dock--saved-copy (org-dock-beside copy ".eld"))))
+    (list :file (plist-get saved :file) :original (plist-get saved :original))))
 
 (defun org-dock-copy-of (pos)
   "Return the buffer of the copy of the heading out at POS, or nil.
 POS is a position in the current buffer.  The copy is opened if its
 buffer was closed.  For writing there what would be written at POS,
 where the heading cannot be changed while it is out."
-  (when-let* ((session (get-text-property pos 'org-dock)))
+  (when-let* ((session (org-dock--out-at pos)))
     (org-dock--open-copy session)))
 
 ;;;; What was changed
@@ -884,17 +924,23 @@ To look over what was changed, by an agent above all, before
     (org-dock--ediff (org-dock--session-original session) (current-buffer)
                      (org-dock--session-heading session))))
 
+(defun org-dock--text-buffer (name text)
+  "Return a new read-only Org buffer named NAME holding TEXT."
+  (let ((buffer (generate-new-buffer name)))
+    (with-current-buffer buffer
+      (insert text)
+      (org-mode)
+      (set-buffer-modified-p nil)
+      (setq buffer-read-only t))
+    buffer))
+
 (defun org-dock--ediff (original copy heading &optional temporary)
   "Compare ORIGINAL, the text of HEADING taken out, with the buffer COPY.
 ORIGINAL is shown in a read-only buffer of its own, gone once Ediff is
 quit, and so is COPY when TEMPORARY."
   (require 'ediff)
-  (let ((before (generate-new-buffer (format "*org-dock: %s, as taken out*" heading))))
-    (with-current-buffer before
-      (insert original)
-      (org-mode)
-      (set-buffer-modified-p nil)
-      (setq buffer-read-only t))
+  (let ((before (org-dock--text-buffer (format "*org-dock: %s, as taken out*" heading)
+                                       original)))
     (ediff-buffers before copy
                    (list (lambda ()
                            (add-hook 'ediff-quit-hook
@@ -905,55 +951,31 @@ quit, and so is COPY when TEMPORARY."
 
 ;;;; The copies in the dock
 
-(defun org-dock--same-text-p (text original)
-  "Return non-nil when TEXT, a copy's, is ORIGINAL, but for the newline at its end."
-  (or (equal text original)
-      (and (string-suffix-p "\n" original)
-           (equal (concat text "\n") original))))
-
 (defun org-dock--copies ()
   "Return the copies in the dock, open or not, as plists.
 Each has :copy, :file, :heading, :original, :whole and :time, as its meta
 file says; a copy of a buffer with no file, which has none, is given by
 its session."
-  (let (copies)
-    (when (file-directory-p org-dock-directory)
-      (dolist (meta-file (directory-files org-dock-directory t "\\.eld\\'"))
-        (let ((copy (concat (file-name-sans-extension meta-file) ".org")))
-          (when-let* (((file-exists-p copy))
-                      (meta (ignore-errors (org-dock--read-meta meta-file)))
-                      ((plist-get meta :file))
-                      ((stringp (plist-get meta :original))))
-            (push (plist-put meta :copy copy) copies)))))
-    (dolist (session (org-dock--live-sessions))
+  (let ((copies (org-dock--saved-copies)))
+    (dolist (session (org-dock--open-sessions))
       (let ((copy (org-dock--session-copy session)))
         (unless (seq-find (lambda (c) (file-equal-p (plist-get c :copy) copy)) copies)
-          (push (list :copy copy
-                      :file (org-dock--session-file session)
-                      :heading (org-dock--session-heading session)
-                      :original (org-dock--session-original session)
-                      :whole (org-dock--session-whole session))
-                copies))))
+          (push (plist-put (org-dock--meta session) :copy copy) copies))))
     copies))
+
+(defun org-dock--changed-p (copy)
+  "Return non-nil when the copy plist COPY no longer holds the text taken out."
+  (let ((original (plist-get copy :original)))
+    (not (equal (org-dock--ended-as (org-dock--current-text (plist-get copy :copy)) original)
+                original))))
 
 (defun org-dock--copy-state (copy)
   "Return what the copy plist COPY is in: who writes it, changed, open."
-  (let* ((file (plist-get copy :copy))
-         (buffer (find-buffer-visiting file))
-         (text (if buffer
-                   (with-current-buffer buffer
-                     (buffer-substring-no-properties (point-min) (point-max)))
-                 (with-temp-buffer
-                   (let ((coding-system-for-read 'utf-8))
-                     (insert-file-contents file))
-                   (buffer-string))))
-         (who (org-dock-busy file)))
+  (let ((file (plist-get copy :copy)))
     (string-join
-     (delq nil (list (and who (format "%s writing" who))
-                     (if (org-dock--same-text-p text (plist-get copy :original))
-                         "unchanged"
-                       "changed")
-                     (unless buffer "not open")))
+     (delq nil (list (when-let* ((who (org-dock-busy file))) (format "%s writing" who))
+                     (if (org-dock--changed-p copy) "changed" "unchanged")
+                     (unless (find-buffer-visiting file) "not open")))
      ", ")))
 
 (defun org-dock--list-entries ()
@@ -1020,23 +1042,15 @@ nowhere to go back to, offer to throw the copy away."
     (if-let* ((buffer (find-buffer-visiting file)))
         (pop-to-buffer buffer)
       (let* ((origin (find-file-noselect (plist-get copy :file)))
-             (pos (with-current-buffer origin
-                    (org-with-wide-buffer
-                     (goto-char (point-min))
-                     (let ((case-fold-search nil)
-                           (text (plist-get copy :original)))
-                       (when (search-forward text nil t)
-                         (let ((found (match-beginning 0)))
-                           (unless (search-forward text nil t) found))))))))
+             (bounds (with-current-buffer origin
+                       (org-dock--search-once (plist-get copy :original)))))
         (cond
-         (pos
+         (bounds
           (with-current-buffer origin
             (let ((org-dock--go-on file))
-              (org-dock-heading pos :whole (plist-get copy :whole)))))
+              (org-dock-heading (car bounds) :whole (plist-get copy :whole)))))
          ((y-or-n-p (format "The heading has changed in its file since it was taken out; throw the %s copy away? "
-                            (if (string-match-p "\\bunchanged\\b" (org-dock--copy-state copy))
-                                "unchanged"
-                              "changed")))
+                            (if (org-dock--changed-p copy) "changed" "unchanged")))
           (org-dock--delete-files file)
           (when (derived-mode-p 'org-dock-list-mode)
             (revert-buffer))
@@ -1048,18 +1062,15 @@ nowhere to go back to, offer to throw the copy away."
   "Compare the copy on this line with its heading as it was taken out."
   (interactive)
   (let* ((copy (org-dock--list-copy))
-         (file (plist-get copy :copy)))
+         (file (plist-get copy :copy))
+         (heading (plist-get copy :heading)))
     (if-let* ((buffer (find-buffer-visiting file)))
         (with-current-buffer buffer (org-dock-diff))
       ;; Not visited, so that taking the heading out again finds it left.
-      (let ((after (generate-new-buffer (format "*org-dock: %s, the copy*" (plist-get copy :heading)))))
-        (with-current-buffer after
-          (let ((coding-system-for-read 'utf-8))
-            (insert-file-contents file))
-          (org-mode)
-          (set-buffer-modified-p nil)
-          (setq buffer-read-only t))
-        (org-dock--ediff (plist-get copy :original) after (plist-get copy :heading) t)))))
+      (org-dock--ediff (plist-get copy :original)
+                       (org-dock--text-buffer (format "*org-dock: %s, the copy*" heading)
+                                              (org-dock--read file))
+                       heading t))))
 
 (provide 'org-dock)
 ;;; org-dock.el ends here

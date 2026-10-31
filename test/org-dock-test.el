@@ -466,7 +466,7 @@ such function says so."
     (org-dock-test--goto "Topic")
     (with-current-buffer (org-dock-test--dock)
       (let* ((stem (file-name-sans-extension buffer-file-name))
-             (beside (concat stem ".result.json"))
+             (beside (org-dock-beside buffer-file-name ".result.json"))
              (other (concat stem "-2.org")))
         (with-temp-file beside (insert "{}"))
         (with-temp-file other (insert "* Other\n"))

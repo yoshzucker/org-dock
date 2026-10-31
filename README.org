@@ -163,7 +163,8 @@ heading's new bounds) or let go (~:abort~), whether to show it
 took it out -- for a command an agent runs on the copy.
 ~org-dock-set-busy~ says something is writing a copy, and
 ~org-dock-busy~ who.  Files kept beside a copy, named by its name and an
-extension of their own, go with it once it is written back or let go.
+extension of their own -- ~org-dock-beside~ names one -- go with it once
+it is written back or let go.
 
 * Settings
 

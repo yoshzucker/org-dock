@@ -515,6 +515,11 @@ A copy's file may lose the newline at its end; the heading keeps its own."
   (org-dock--ended-as (org-dock--current-text (org-dock--session-copy session))
                       (org-dock--session-original session)))
 
+(defun org-dock--changed-p (copy original)
+  "Return non-nil when the copy in the file COPY no longer holds ORIGINAL.
+ORIGINAL is the text taken out; a newline lost at the copy's end is no change."
+  (not (equal (org-dock--ended-as (org-dock--current-text copy) original) original)))
+
 (defun org-dock--show (buffer)
   "Show the copy BUFFER in another window, as `org-capture' does."
   (pop-to-buffer buffer '((display-buffer-reuse-window display-buffer-pop-up-window))))
@@ -730,7 +735,8 @@ headings at that level, or below, are written where the heading was."
   "Let this copy go, leaving its heading as it was taken out."
   (interactive)
   (let ((session (org-dock--here-free)))
-    (when (or (equal (org-dock--copy-text session) (org-dock--session-original session))
+    (when (or (not (org-dock--changed-p (org-dock--session-copy session)
+                                        (org-dock--session-original session)))
               (y-or-n-p "Let go of what was changed in the copy? "))
       (org-dock--unlock session)
       (when-let* ((abort (org-dock--session-abort session))
@@ -963,18 +969,12 @@ its session."
           (push (plist-put (org-dock--meta session) :copy copy) copies))))
     copies))
 
-(defun org-dock--changed-p (copy)
-  "Return non-nil when the copy plist COPY no longer holds the text taken out."
-  (let ((original (plist-get copy :original)))
-    (not (equal (org-dock--ended-as (org-dock--current-text (plist-get copy :copy)) original)
-                original))))
-
 (defun org-dock--copy-state (copy)
   "Return what the copy plist COPY is in: who writes it, changed, open."
   (let ((file (plist-get copy :copy)))
     (string-join
      (delq nil (list (when-let* ((who (org-dock-busy file))) (format "%s writing" who))
-                     (if (org-dock--changed-p copy) "changed" "unchanged")
+                     (if (org-dock--changed-p file (plist-get copy :original)) "changed" "unchanged")
                      (unless (find-buffer-visiting file) "not open")))
      ", ")))
 
@@ -1026,10 +1026,18 @@ its session."
       (tabulated-list-print))
     (pop-to-buffer buffer)))
 
+(defun org-dock--copy (file)
+  "Return the copy in FILE as a plist, as `org-dock--copies' gives it, or nil.
+Nil when it is gone."
+  (or (org-dock--saved-copy (org-dock-beside file ".eld"))
+      (when-let* ((buffer (find-buffer-visiting file))
+                  (session (buffer-local-value 'org-dock--session buffer)))
+        (plist-put (org-dock--meta session) :copy file))))
+
 (defun org-dock--list-copy ()
   "Return the plist of the copy on this line of the list."
   (let ((file (or (tabulated-list-get-id) (user-error "org-dock: no copy here"))))
-    (or (seq-find (lambda (c) (file-equal-p (plist-get c :copy) file)) (org-dock--copies))
+    (or (org-dock--copy file)
         (user-error "org-dock: the copy is gone; %s" (substitute-command-keys "\\[revert-buffer] lists them again")))))
 
 (defun org-dock-list-open ()
@@ -1050,7 +1058,7 @@ nowhere to go back to, offer to throw the copy away."
             (let ((org-dock--go-on file))
               (org-dock-heading (car bounds) :whole (plist-get copy :whole)))))
          ((y-or-n-p (format "The heading has changed in its file since it was taken out; throw the %s copy away? "
-                            (if (org-dock--changed-p copy) "changed" "unchanged")))
+                            (if (org-dock--changed-p file (plist-get copy :original)) "changed" "unchanged")))
           (org-dock--delete-files file)
           (when (derived-mode-p 'org-dock-list-mode)
             (revert-buffer))
